@@ -1,7 +1,10 @@
-import { promptAction } from '@kit.ArkUI';
+﻿import { promptAction } from '@kit.ArkUI';
 import common from '@ohos.app.ability.common';
+import router from '@ohos.router';
+import preferences from '@ohos.data.preferences';
 import BillRdb from '../db/BillRdb';
 import { BillItem } from '../model/BillItem';
+import { CalendarView } from '../component/CalendarView';
 
 // 显式定义所有需要的样式接口
 interface SelectOption {
@@ -67,6 +70,62 @@ struct FormCard {
   }
 }
 
+@CustomDialog
+struct BudgetInputDialog {
+  controller: CustomDialogController
+  confirm: (value: number) => void = (value: number) => {}
+  @State inputValue: string = ""
+
+  build() {
+    Column() {
+      Text("设置每月预算")
+        .fontSize(18)
+        .fontWeight(FontWeight.Bold)
+        .margin({ top: 24, bottom: 16 })
+
+      TextInput({ placeholder: "请输入预算金额", text: this.inputValue })
+        .type(InputType.Number)
+        .onChange((value: string) => {
+          this.inputValue = value
+        })
+        .width("90%")
+        .height(48)
+        .backgroundColor("#F5F7FA")
+        .margin({ bottom: 24 })
+
+      Row() {
+        Button("取消")
+          .onClick(() => {
+            this.controller.close()
+          })
+          .backgroundColor("#F5F7FA")
+          .fontColor("#666666")
+          .layoutWeight(1)
+          .margin({ right: 12 })
+        
+        Button("确定")
+          .onClick(() => {
+            const val = parseFloat(this.inputValue)
+            if (!isNaN(val) && val >= 0) {
+              this.confirm(val)
+              this.controller.close()
+            } else {
+              promptAction.showToast({ message: '请输入有效的金额' })
+            }
+          })
+          .backgroundColor("#4A6CF7")
+          .fontColor(Color.White)
+          .layoutWeight(1)
+      }
+      .width("90%")
+      .margin({ bottom: 24 })
+    }
+    .backgroundColor(Color.White)
+    .borderRadius(16)
+    .width("80%")
+  }
+}
+
 @Entry
 @Component
 struct CoinNote {
@@ -81,6 +140,7 @@ struct CoinNote {
   @State payType: string = "微信";
   @State tags: string[] = [];
   @State isReimbursable: boolean = false;
+  @State isAA: boolean = false; // 是否AA
   @State billDirection: 'expense' | 'income' = 'expense'; // 修改：避免与系统属性冲突
   @State chartWidth: number = 300; // 图表宽度，默认300，通过onAreaChange更新
   @State chartHeight: number = 150; // 图表高度
@@ -88,7 +148,21 @@ struct CoinNote {
   @State statsType: 'expense' | 'income' = 'expense'; // 统计类型
   @State searchText: string = ""; // 搜索关键字
   @State editingBillId: number = 0; // 正在编辑的账单ID，0表示新增模式
-  
+  @State hasPassword: boolean = false; // 是否已设置密码
+  @State monthlyBudget: number = 0; // 每月预算
+  @State @Watch('updateCalendarBills') isCalendarMode: boolean = false; // 是否为日历模式
+  @State @Watch('updateCalendarBills') calendarSelectedDate: Date = new Date(); // 日历模式下选中的日期
+  @State calendarBills: DayGroup[] = []; // 日历模式下显示的账单
+
+  budgetDialogController: CustomDialogController = new CustomDialogController({
+    builder: BudgetInputDialog({
+      confirm: (value: number) => this.saveBudget(value)
+    }),
+    alignment: DialogAlignment.Center,
+    autoCancel: true,
+    customStyle: true
+  })
+
   // Canvas设置
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private context: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
@@ -128,11 +202,27 @@ struct CoinNote {
   onBillListChange(): void {
     // 数据变化时触发动画重绘
     this.animateCharts();
+    // 更新日历模式数据
+    if (this.isCalendarMode) {
+      this.updateCalendarBills();
+    }
+  }
+
+  // 更新日历模式下的账单列表
+  updateCalendarBills(): void {
+    if (this.isCalendarMode) {
+      this.calendarBills = this.getGroupedBills(this.calendarSelectedDate);
+    }
+  }
+
+  onPageShow() {
+    this.checkPasswordStatus();
   }
 
   aboutToAppear(): void {
     const now = new Date();
     this.dateStr = this.formatDate(now);
+    this.checkPasswordStatus();
     
     // 初始化数据库并加载数据
     const context = getContext(this) as common.UIAbilityContext;
@@ -143,10 +233,39 @@ struct CoinNote {
     });
   }
 
+  async checkPasswordStatus(): Promise<void> {
+    try {
+      const context = getContext(this);
+      const pref = await preferences.getPreferences(context, 'coin_note_pref');
+      const password = await pref.get('app_password', '') as string;
+      this.hasPassword = !!password;
+      this.monthlyBudget = await pref.get('monthly_budget', 0) as number;
+    } catch (e) {
+      console.error('Failed to check password status', e);
+    }
+  }
+
+  async saveBudget(amount: number): Promise<void> {
+    try {
+      const context = getContext(this);
+      const pref = await preferences.getPreferences(context, 'coin_note_pref');
+      await pref.put('monthly_budget', amount);
+      await pref.flush();
+      this.monthlyBudget = amount;
+      promptAction.showToast({ message: '预算设置成功' });
+    } catch (e) {
+      console.error('Failed to save budget', e);
+    }
+  }
+
   // 刷新账单列表
   private refreshBillList(): void {
     BillRdb.queryAll().then((list) => {
       this.billList = list;
+      // 如果在日历模式，也刷新日历数据
+      if (this.isCalendarMode) {
+        this.updateCalendarBills();
+      }
     });
   }
 
@@ -158,8 +277,8 @@ struct CoinNote {
   // 选项数据
   private expenseTypes: string[] = ["餐饮", "交通", "购物", "娱乐", "水电煤", "房租", "通讯", "医疗", "其他"];
   private incomeTypes: string[] = ["工资", "奖金", "理财", "兼职", "礼金", "其他"]; // 新增：收入类型
-  private payTypes: string[] = ["微信", "支付宝", "银行卡", "现金"];
-  private tagOptions: string[] = ["早餐", "午餐", "晚餐", "外卖", "地铁", "公交", "超市", "电影", "通勤", "日用品", "聚餐"];
+  private payTypes: string[] = ["微信", "支付宝", "银行卡", "现金", "其他"];
+  private tagOptions: string[] = ["早餐", "午餐", "晚餐", "外卖", "地铁", "公交", "超市", "电影", "通勤", "日用品", "聚餐", "其他"];
 
   // 生成Select选项
   private getSelectOptions(): SelectOption[] {
@@ -213,6 +332,17 @@ struct CoinNote {
       return;
     }
 
+    // 如果是编辑模式，保留原有的状态
+    let isAaReceived = false;
+    let isReimbursementReceived = false;
+    if (this.editingBillId > 0) {
+      const originalBill = this.billList.find(b => b.id === this.editingBillId);
+      if (originalBill) {
+        isAaReceived = originalBill.isAaReceived || false;
+        isReimbursementReceived = originalBill.isReimbursementReceived || false;
+      }
+    }
+
     const bill: BillItem = {
       id: this.editingBillId > 0 ? this.editingBillId : Date.now(),
       type: this.expenseType,
@@ -221,6 +351,9 @@ struct CoinNote {
       payType: this.payType,
       tags: [...this.tags],
       isReimbursable: this.isReimbursable,
+      isReimbursementReceived: isReimbursementReceived,
+      isAA: this.isAA,
+      isAaReceived: isAaReceived,
       note: this.note,
       direction: this.billDirection
     };
@@ -276,6 +409,7 @@ struct CoinNote {
     this.dateStr = this.formatDate(this.selectedDate);
     this.payType = "微信";
     this.isReimbursable = false;
+    this.isAA = false;
     this.amountError = "";
     // 不重置 billDirection，方便连续记账
   }
@@ -291,6 +425,7 @@ struct CoinNote {
     this.payType = bill.payType;
     this.tags = [...bill.tags];
     this.isReimbursable = bill.isReimbursable;
+    this.isAA = bill.isAA || false;
     this.note = bill.note;
     
     this.currentTab = 0; // 切换到记账页
@@ -336,6 +471,188 @@ struct CoinNote {
         }
       }
     })
+  }
+
+  // 切换AA收到状态
+  private toggleAAStatus(bill: BillItem): void {
+    if (bill.isAaReceived) {
+      // 撤销 AA 收款
+      AlertDialog.show({
+        title: '撤销AA收款',
+        message: '确定要撤销AA收款状态吗？账单金额将恢复。',
+        primaryButton: {
+          value: '取消',
+          action: () => {}
+        },
+        secondaryButton: {
+          value: '撤销',
+          action: () => {
+            // 恢复金额 = 原始金额 + (已收到的AA金额 || 0)
+            let newAmount = bill.amount;
+            if (!bill.isReimbursementReceived) {
+               newAmount = bill.amount + (bill.aaReceivedAmount || 0);
+            }
+
+            const updatedBill: BillItem = {
+              id: bill.id,
+              type: bill.type,
+              amount: newAmount,
+              date: bill.date,
+              payType: bill.payType,
+              tags: bill.tags,
+              isReimbursable: bill.isReimbursable,
+              isReimbursementReceived: bill.isReimbursementReceived,
+              isAA: bill.isAA,
+              isAaReceived: false,
+              originalAmount: bill.originalAmount,
+              aaReceivedAmount: 0, // 清零
+              note: bill.note, // 备注可能需要清理，这里暂时保留
+              direction: bill.direction
+            };
+            
+            BillRdb.update(updatedBill).then(() => {
+              this.refreshBillList();
+              promptAction.showToast({ message: 'AA收款已撤销' });
+            });
+          }
+        }
+      })
+      return;
+    }
+
+    // 弹窗输入收到的金额
+    this.openAAConfirmDialog(bill);
+  }
+
+  // 切换报销收到状态
+  private toggleReimbursementStatus(bill: BillItem): void {
+    if (bill.isReimbursementReceived) {
+      // 撤销报销
+      AlertDialog.show({
+        title: '撤销报销',
+        message: '确定要撤销报销状态吗？账单金额将恢复。',
+        primaryButton: {
+          value: '取消',
+          action: () => {}
+        },
+        secondaryButton: {
+          value: '撤销',
+          action: () => {
+            // 恢复金额 = 原始金额 - (已收AA金额 || 0)
+            // 如果 originalAmount 不存在（旧数据），则尝试用 amount 恢复（但 amount 已经是 0 了...）
+            // 如果 originalAmount 丢失，无法准确恢复。我们假设 originalAmount 存在。
+            const original = bill.originalAmount || 0;
+            const aaReceived = bill.aaReceivedAmount || 0;
+            const newAmount = original - aaReceived;
+
+            const updatedBill: BillItem = {
+              id: bill.id,
+              type: bill.type,
+              amount: newAmount,
+              date: bill.date,
+              payType: bill.payType,
+              tags: bill.tags,
+              isReimbursable: bill.isReimbursable,
+              isReimbursementReceived: false,
+              isAA: bill.isAA,
+              isAaReceived: bill.isAaReceived,
+              originalAmount: bill.originalAmount,
+              aaReceivedAmount: bill.aaReceivedAmount,
+              note: bill.note,
+              direction: bill.direction
+            };
+            BillRdb.update(updatedBill).then(() => {
+              this.refreshBillList();
+              promptAction.showToast({ message: '报销状态已撤销' });
+            });
+          }
+        }
+      })
+      return;
+    }
+
+    AlertDialog.show({
+      title: '确认报销',
+      message: '确认已收到报销款？账单金额将变为 0。',
+      primaryButton: {
+        value: '取消',
+        action: () => {}
+      },
+      secondaryButton: {
+        value: '确认',
+        action: () => {
+          // 记录原始金额（如果还没记录过）
+          // 如果已经有 originalAmount (比如做过 AA)，则保持不变
+          const original = (bill.originalAmount !== undefined && bill.originalAmount !== null) ? bill.originalAmount : bill.amount;
+
+          const updatedBill: BillItem = {
+            id: bill.id,
+            type: bill.type,
+            amount: 0, // 报销完成后金额变为0
+            date: bill.date,
+            payType: bill.payType,
+            tags: bill.tags,
+            isReimbursable: bill.isReimbursable,
+            isReimbursementReceived: true,
+            isAA: bill.isAA,
+            isAaReceived: bill.isAaReceived,
+            originalAmount: original,
+            aaReceivedAmount: bill.aaReceivedAmount,
+            note: bill.note + " (已报销)",
+            direction: bill.direction
+          };
+          BillRdb.update(updatedBill).then(() => {
+            this.refreshBillList();
+            promptAction.showToast({ message: '报销状态已更新' });
+          });
+        }
+      }
+    })
+  }
+
+  aaConfirmController: CustomDialogController | null = null;
+
+  private openAAConfirmDialog(bill: BillItem) {
+    this.aaConfirmController = new CustomDialogController({
+      builder: AAConfirmDialog({
+        confirm: (receivedAmount: number) => {
+          const newAmount = bill.amount - receivedAmount;
+          if (newAmount < 0) {
+            promptAction.showToast({ message: '收到金额不能大于账单金额' });
+            return;
+          }
+          
+          // 记录原始金额
+          const original = (bill.originalAmount !== undefined && bill.originalAmount !== null) ? bill.originalAmount : bill.amount;
+
+          const updatedBill: BillItem = {
+            id: bill.id,
+            type: bill.type,
+            amount: newAmount,
+            date: bill.date,
+            payType: bill.payType,
+            tags: bill.tags,
+            isReimbursable: bill.isReimbursable,
+            isReimbursementReceived: bill.isReimbursementReceived,
+            isAA: bill.isAA,
+            isAaReceived: true,
+            originalAmount: original,
+            aaReceivedAmount: receivedAmount,
+            note: bill.note + ` (AA已收: ${receivedAmount})`,
+            direction: bill.direction
+          };
+          
+          BillRdb.update(updatedBill).then(() => {
+            this.refreshBillList();
+            promptAction.showToast({ message: 'AA状态已更新' });
+          });
+        }
+      }),
+      alignment: DialogAlignment.Center,
+      autoCancel: true,
+      customStyle: true
+    });
+    this.aaConfirmController.open();
   }
 
   // 侧滑删除按钮
@@ -385,11 +702,51 @@ struct CoinNote {
   }
 
   // 按日期分组账单
-  private getGroupedBills(): DayGroup[] {
+  private getGroupedBills(filterDate?: Date): DayGroup[] {
     const groups: Record<string, DayGroup> = {};
     const keyword = this.searchText.trim().toLowerCase();
     
+    let filterYear = 0;
+    let filterMonth = 0;
+    let filterDay = 0;
+    let targetDateStr = "";
+    
+    if (filterDate) {
+      filterYear = filterDate.getFullYear();
+      filterMonth = filterDate.getMonth();
+      filterDay = filterDate.getDate();
+      targetDateStr = `${filterYear}/${filterMonth + 1}/${filterDay}`;
+    }
+
     this.billList.forEach((bill: BillItem): void => {
+      // 日历模式过滤
+      if (filterDate) {
+        let isMatch = false;
+        
+        // 1. 尝试直接字符串匹配 (最快且最准确，如果格式一致)
+        if (bill.date === targetDateStr) {
+          isMatch = true;
+        }
+        
+        // 2. 如果字符串不匹配，尝试解析日期进行数值匹配 (兼容不同格式如 01 vs 1)
+        if (!isMatch) {
+          const parts = bill.date.split('/');
+          if (parts.length === 3) {
+            const bYear = parseInt(parts[0]);
+            const bMonth = parseInt(parts[1]) - 1;
+            const bDay = parseInt(parts[2]);
+            
+            if (bYear === filterYear && bMonth === filterMonth && bDay === filterDay) {
+              isMatch = true;
+            }
+          }
+        }
+        
+        if (!isMatch) {
+          return;
+        }
+      }
+
       // 搜索过滤逻辑
       if (keyword) {
         const matchType = bill.type.toLowerCase().includes(keyword);
@@ -398,8 +755,9 @@ struct CoinNote {
         const matchTags = bill.tags.some((tag: string): boolean => tag.toLowerCase().includes(keyword));
         // 如果是报销单，且关键字包含在"报销"中（例如搜"报"、"销"或"报销"），则匹配
         const matchReimbursable = bill.isReimbursable && '报销'.includes(keyword);
+        const matchAA = bill.isAA && 'AA'.toLowerCase().includes(keyword.toLowerCase());
         
-        if (!matchType && !matchNote && !matchAmount && !matchTags && !matchReimbursable) {
+        if (!matchType && !matchNote && !matchAmount && !matchTags && !matchReimbursable && !matchAA) {
           return; // 如果都不匹配，跳过该条目
         }
       }
@@ -794,18 +1152,29 @@ struct CoinNote {
               // 2. 金额输入（文本输入 + 校验）
               FormCard({ title: "金额（元）*" }) {
                 Column() {
-                  TextInput({ placeholder: "0.00", text: this.amount })
-                    .fontSize(24)
-                    .fontWeight(FontWeight.Bold)
-                    .fontColor("#F53F3F")
-                    .width("100%")
-                    .height(48)
-                    .backgroundColor(Color.Transparent)
-                    .type(InputType.Number) // 修正为 type
-                    .onChange((value: string) => {
-                      this.amount = value;
-                      this.validateAmount();
-                    })
+                  Row() {
+                    TextInput({ placeholder: "0.00", text: this.amount })
+                      .fontSize(24)
+                      .fontWeight(FontWeight.Bold)
+                      .fontColor("#F53F3F")
+                      .layoutWeight(1)
+                      .height(48)
+                      .backgroundColor(Color.Transparent)
+                      .type(InputType.Normal) // 改为 Normal 以确保小数点能正确显示和输入
+                      .onChange((value: string) => {
+                        // 过滤非数字和小数点
+                        const filtered = value.replace(/[^0-9.]/g, '');
+                        // 保证只有一个小数点
+                        const parts = filtered.split('.');
+                        if (parts.length > 2) {
+                           this.amount = parts[0] + '.' + parts.slice(1).join('');
+                        } else {
+                           this.amount = filtered;
+                        }
+                        this.validateAmount();
+                      })
+                  }
+                  .width("100%")
                   
                   if (this.amountError) {
                     Text(this.amountError)
@@ -885,21 +1254,39 @@ struct CoinNote {
                 }
               }
 
-              // 6. 是否报销（Switch 开关）
+              // 6. 其他选项（报销、AA）
               FormCard({ title: "其他选项" }) {
-                Row() {
-                  Text("是否报销")
-                    .fontSize(16)
-                    .fontColor("#333333")
-                  Blank()
-                  Toggle({ type: ToggleType.Switch, isOn: this.isReimbursable })
-                    .onChange((isOn: boolean) => {
-                      this.isReimbursable = isOn;
-                    })
+                Column() {
+                  Row() {
+                    Text("是否报销")
+                      .fontSize(16)
+                      .fontColor("#333333")
+                    Blank()
+                    Toggle({ type: ToggleType.Switch, isOn: this.isReimbursable })
+                      .onChange((isOn: boolean) => {
+                        this.isReimbursable = isOn;
+                      })
+                  }
+                  .width("100%")
+                  .height(40)
+                  .alignItems(VerticalAlign.Center)
+
+                  Divider().color('#F5F5F5').margin({ top: 4, bottom: 4 })
+
+                  Row() {
+                    Text("是否AA")
+                      .fontSize(16)
+                      .fontColor("#333333")
+                    Blank()
+                    Toggle({ type: ToggleType.Switch, isOn: this.isAA })
+                      .onChange((isOn: boolean) => {
+                        this.isAA = isOn;
+                      })
+                  }
+                  .width("100%")
+                  .height(40)
+                  .alignItems(VerticalAlign.Center)
                 }
-                .width("100%")
-                .height(40)
-                .alignItems(VerticalAlign.Center)
               }
 
               // 7. 备注（多行文本输入）
@@ -955,10 +1342,10 @@ struct CoinNote {
         // 标签页2：明细列表
         TabContent() {
           Column() {
-            // 搜索栏
+            // 顶部栏：搜索 + 模式切换
             Row() {
               Search({ value: this.searchText, placeholder: '搜索分类、备注、金额或标签' })
-                .width('100%')
+                .layoutWeight(1)
                 .height(40)
                 .backgroundColor(Color.White)
                 .placeholderColor('#999999')
@@ -967,11 +1354,201 @@ struct CoinNote {
                 .onChange((value: string) => {
                   this.searchText = value;
                 })
+              
+              // 模式切换按钮
+              Button(this.isCalendarMode ? "列表" : "日历")
+                .type(ButtonType.Normal)
+                .backgroundColor(Color.White)
+                .fontColor("#4A6CF7")
+                .fontSize(14)
+                .height(40)
+                .width(60)
+                .borderRadius(8)
+                .margin({ left: 8 })
+                .onClick(() => {
+                  this.isCalendarMode = !this.isCalendarMode;
+                  if (this.isCalendarMode) {
+                    this.calendarSelectedDate = new Date(); // 切换到日历模式时默认选中今天
+                  }
+                })
             }
             .width("100%")
             .padding({ left: 16, right: 16, top: 12, bottom: 8 })
 
-            if (this.billList.length === 0) {
+            if (this.isCalendarMode) {
+              // 日历模式视图
+              Column() {
+                // 1. 日历区域
+                Column() {
+                  CalendarView({ 
+                    selectedDate: $calendarSelectedDate,
+                    bills: this.billList
+                  })
+                }
+                .width("100%")
+                .margin({ left: 16, right: 16, bottom: 16 })
+                .flexShrink(0) // 防止被压缩
+
+                // 2. 标题区域
+                Row() {
+                  Text(this.formatDate(this.calendarSelectedDate))
+                    .fontSize(14)
+                    .fontColor("#666666")
+
+                  Blank()
+                  if (this.calendarBills.length === 0) {
+                    Text("无记录")
+                      .fontSize(14)
+                      .fontColor("#999999")
+                  }
+                }
+                .width("100%")
+                .padding({ left: 16, right: 16, bottom: 8 })
+                .flexShrink(0)
+
+                // 3. 列表区域
+                List({ space: 0 }) {
+                  ForEach(this.calendarBills, (group: DayGroup) => {
+                    ListItemGroup({ header: this.groupHeader(group) }) {
+                      ForEach(group.bills, (bill: BillItem) => {
+                        ListItem() {
+                          Row() {
+                            // 左侧：图标或类型首字
+                            Column() {
+                              Text(bill.type.substring(0, 1))
+                                .fontSize(18)
+                                .fontWeight(FontWeight.Bold)
+                                .fontColor(Color.White)
+                            }
+                            .width(40)
+                            .height(40)
+                            .borderRadius(20)
+                            .backgroundColor(this.getCategoryColor(bill.type))
+                            .justifyContent(FlexAlign.Center)
+                            .alignItems(HorizontalAlign.Center)
+                            .margin({ right: 12 })
+
+                            // 中间：信息
+                            Column({ space: 4 }) {
+                              Row({ space: 8 }) {
+                                Text(bill.type)
+                                  .fontSize(16)
+                                  .fontWeight(FontWeight.Medium)
+                                  .fontColor("#333333")
+                                  .maxLines(1)
+                                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                                  .layoutWeight(1)
+                                if (bill.isReimbursable) {
+                                  Text(bill.isReimbursementReceived ? "已报销" : "待报销")
+                                    .fontSize(10)
+                                    .fontColor(bill.isReimbursementReceived ? "#999999" : "#4A6CF7")
+                                    .backgroundColor(bill.isReimbursementReceived ? "#F0F0F0" : "#E6EAFB")
+                                    .padding({ left: 4, right: 4, top: 2, bottom: 2 })
+                                    .borderRadius(4)
+                                    .flexShrink(0)
+                                    .onClick(() => {
+                                      this.toggleReimbursementStatus(bill);
+                                    })
+                                }
+                                if (bill.isAA) {
+                                  Text(bill.isAaReceived ? "AA已收" : "AA待收")
+                                    .fontSize(10)
+                                    .fontColor(bill.isAaReceived ? "#999999" : "#FF9500")
+                                    .backgroundColor(bill.isAaReceived ? "#F0F0F0" : "#FFF0E0")
+                                    .padding({ left: 4, right: 4, top: 2, bottom: 2 })
+                                    .borderRadius(4)
+                                    .flexShrink(0)
+                                    .margin({ left: 4 })
+                                    .onClick(() => {
+                                      this.toggleAAStatus(bill);
+                                    })
+                                }
+                              }
+                              .width("100%")
+                              
+                              Text(`${bill.date} · ${bill.payType}`)
+                                .fontSize(12)
+                                .fontColor("#999999")
+                                .width("100%")
+                                .maxLines(1)
+                                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                              
+                              if (bill.note) {
+                                Text(bill.note)
+                                  .fontSize(12)
+                                  .fontColor("#666666")
+                                  .width("100%")
+                                  .maxLines(1)
+                                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                                  .margin({ top: 4 })
+                              }
+                            }
+                            .layoutWeight(1)
+
+                            // 右侧：金额
+                            Column({ space: 4 }) {
+                              Text(`${bill.direction === 'expense' ? '-' : '+'} ${bill.amount.toFixed(2)}`)
+                                .fontSize(18)
+                                .fontWeight(FontWeight.Bold)
+                                .fontColor(bill.direction === 'expense' ? "#333333" : "#34C759")
+                                .maxLines(1)
+                                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                              
+                              if (bill.tags.length > 0) {
+                                Text(bill.tags.join(" "))
+                                  .fontSize(12)
+                                  .fontColor("#999999")
+                                  .maxLines(1)
+                                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                              }
+                            }
+                            .alignItems(HorizontalAlign.End)
+                            .flexShrink(0)
+                            .constraintSize({ maxWidth: "40%" })
+                          }
+                          .width("100%")
+                          .padding(16)
+                          .backgroundColor(Color.White)
+                          .borderRadius(12)
+                          .shadow({ radius: 4, color: "#0D000000", offsetY: 2 }) // 优化阴影
+                          .onClick(() => {
+                            ActionSheet.show({
+                              title: '账单操作',
+                              message: `类型：${bill.type}  金额：${bill.amount.toFixed(2)}`,
+                              autoCancel: true,
+                              alignment: DialogAlignment.Bottom,
+                              offset: { dx: 0, dy: -10 },
+                              sheets: [
+                                {
+                                  title: '编辑',
+                                  action: () => {
+                                    this.startEdit(bill);
+                                  }
+                                },
+                                {
+                                  title: '删除',
+                                  action: () => {
+                                    this.deleteBill(bill.id);
+                                  }
+                                }
+                              ]
+                            })
+                          })
+                        }
+                        .swipeAction({ end: this.itemEnd(bill.id) })
+                        .margin({ bottom: 12 })
+                      }, (bill: BillItem) => bill.id.toString())
+                    }
+                  }, (group: DayGroup) => group.date)
+                }
+                .width("100%")
+                .layoutWeight(1) // 占据剩余空间
+                .padding({ left: 16, right: 16, bottom: 16 })
+                .scrollBar(BarState.Auto)
+              }
+              .width("100%")
+              .layoutWeight(1) // 占据父容器剩余空间
+            } else if (this.billList.length === 0) {
               // 空状态
               Column() {
                 // 使用Text代替Image作为空状态图标
@@ -1020,13 +1597,35 @@ struct CoinNote {
                                 .textOverflow({ overflow: TextOverflow.Ellipsis })
                                 .layoutWeight(1)
                               if (bill.isReimbursable) {
-                                Text("报销")
+                                Text(bill.isReimbursementReceived ? "已报销" : "待报销")
                                   .fontSize(10)
-                                  .fontColor("#4A6CF7")
-                                  .backgroundColor("#E6EAFB")
+                                  .fontColor(bill.isReimbursementReceived ? "#999999" : "#4A6CF7")
+                                  .backgroundColor(bill.isReimbursementReceived ? "#F0F0F0" : "#E6EAFB")
                                   .padding({ left: 4, right: 4, top: 2, bottom: 2 })
                                   .borderRadius(4)
                                   .flexShrink(0)
+                                  .onClick((event: ClickEvent) => {
+                                    // 阻止冒泡，避免触发列表项点击
+                                    // 注意：ArkTS ClickEvent 没有 stopPropagation 方法，
+                                    // 但通常 onClick 会捕获事件。如果 ListItem 也有 onClick，可能需要注意。
+                                    // 这里假设 ListItem 的 onClick 是在 Row 上或者 ListItem 本身。
+                                    // 如果 ListItem 有 onClick，点击内部组件可能会触发。
+                                    // 暂时先这样写，如果触发了编辑，用户可以取消。
+                                    this.toggleReimbursementStatus(bill);
+                                  })
+                              }
+                              if (bill.isAA) {
+                                Text(bill.isAaReceived ? "AA已收" : "AA待收")
+                                  .fontSize(10)
+                                  .fontColor(bill.isAaReceived ? "#999999" : "#FF9500")
+                                  .backgroundColor(bill.isAaReceived ? "#F0F0F0" : "#FFF0E0")
+                                  .padding({ left: 4, right: 4, top: 2, bottom: 2 })
+                                  .borderRadius(4)
+                                  .flexShrink(0)
+                                  .margin({ left: 4 })
+                                  .onClick(() => {
+                                    this.toggleAAStatus(bill);
+                                  })
                               }
                             }
                             .width("100%")
@@ -1121,9 +1720,10 @@ struct CoinNote {
 
         // 标签页3：统计
         TabContent() {
-          Column() {
-            // 头部：日期选择
-            Row() {
+          Scroll() {
+            Column() {
+              // 头部：日期选择
+              Row() {
               Text(`${this.statsDate.getFullYear()}年${this.statsDate.getMonth() + 1}月`)
                 .fontSize(18)
                 .fontWeight(FontWeight.Bold)
@@ -1192,6 +1792,76 @@ struct CoinNote {
             .borderRadius(12)
             .margin({ bottom: 16 })
             .shadow({ radius: 4, color: "#0D000000", offsetY: 2 }) // 优化阴影
+
+            // 预算概览卡片
+            if (this.monthlyBudget > 0) {
+              Column() {
+                Row() {
+                  Text("预算概览")
+                    .fontSize(14)
+                    .fontColor("#666666")
+                  Blank()
+                  Text(this.getMonthlyStats().totalExpense > this.monthlyBudget ? "已超支" : "剩余")
+                    .fontSize(12)
+                    .fontColor(this.getMonthlyStats().totalExpense > this.monthlyBudget ? "#FF3B30" : "#34C759")
+                    .margin({ right: 4 })
+                  Text(this.getMonthlyStats().totalExpense > this.monthlyBudget ? 
+                       `¥ ${(this.getMonthlyStats().totalExpense - this.monthlyBudget).toFixed(2)}` : 
+                       `¥ ${(this.monthlyBudget - this.getMonthlyStats().totalExpense).toFixed(2)}`)
+                    .fontSize(14)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor(this.getMonthlyStats().totalExpense > this.monthlyBudget ? "#FF3B30" : "#34C759")
+                }
+                .width("100%")
+                .margin({ bottom: 12 })
+
+                // 进度条
+                Progress({ 
+                  value: Math.min(this.getMonthlyStats().totalExpense, this.monthlyBudget), 
+                  total: this.monthlyBudget, 
+                  type: ProgressType.Linear 
+                })
+                .color(this.getMonthlyStats().totalExpense > this.monthlyBudget ? "#FF3B30" : "#4A6CF7")
+                .width("100%")
+                .height(8)
+                .margin({ bottom: 12 })
+
+                Row() {
+                  Column() {
+                    Text("已用")
+                      .fontSize(12)
+                      .fontColor("#999999")
+                    Text(`¥ ${this.getMonthlyStats().totalExpense.toFixed(2)}`)
+                      .fontSize(14)
+                      .fontWeight(FontWeight.Medium)
+                      .fontColor("#333333")
+                      .margin({ top: 2 })
+                  }
+                  .alignItems(HorizontalAlign.Start)
+
+                  Blank()
+
+                  Column() {
+                    Text("总预算")
+                      .fontSize(12)
+                      .fontColor("#999999")
+                    Text(`¥ ${this.monthlyBudget.toFixed(0)}`)
+                      .fontSize(14)
+                      .fontWeight(FontWeight.Medium)
+                      .fontColor("#333333")
+                      .margin({ top: 2 })
+                  }
+                  .alignItems(HorizontalAlign.End)
+                }
+                .width("100%")
+              }
+              .width("92%")
+              .padding(16)
+              .backgroundColor(Color.White)
+              .borderRadius(12)
+              .margin({ bottom: 16 })
+              .shadow({ radius: 4, color: "#0D000000", offsetY: 2 })
+            }
 
             // 收支切换
             Row() {
@@ -1306,18 +1976,210 @@ struct CoinNote {
               })
             }
             .width("92%")
-            .layoutWeight(1)
+            // .layoutWeight(1) // 移除 layoutWeight，让 List 根据内容自适应高度
             .backgroundColor(Color.White)
             .borderRadius(12)
             .padding(16)
+            .margin({ bottom: 20 }) // 底部留白
             .shadow({ radius: 4, color: "#0D000000", offsetY: 2 }) // 优化阴影
+          }
+          .width("100%")
+          // .height("100%") // 移除固定高度，让 Column 自适应 Scroll
+          .backgroundColor("#F9FAFB")
+          .alignItems(HorizontalAlign.Center)
+        }
+        .width("100%")
+        .height("100%")
+        .scrollBar(BarState.Auto)
+        .align(Alignment.Top)
+      }
+      .tabBar(this.TabBuilder("统计", 2, "📊"))
+
+        TabContent() {
+          Column() {
+            // 顶部标题
+            Row() {
+              Text("我的")
+                .fontSize(20)
+                .fontWeight(FontWeight.Bold)
+                .fontColor("#333333")
+            }
+            .width("100%")
+            .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+            .backgroundColor(Color.White)
+            .shadow({ radius: 2, color: "#0D000000", offsetY: 1 })
+
+            Column({ space: 12 }) {
+              // 隐私安全卡片
+              FormCard({ title: "隐私安全" }) {
+                Row() {
+                  Column() {
+                    Text("应用密码锁")
+                      .fontSize(16)
+                      .fontColor("#333333")
+                      .margin({ bottom: 4 })
+                    Text(this.hasPassword ? "已开启" : "未开启")
+                      .fontSize(12)
+                      .fontColor(this.hasPassword ? "#34C759" : "#999999")
+                  }
+                  .alignItems(HorizontalAlign.Start)
+
+                  Blank()
+
+                  if (this.hasPassword) {
+                    Row({ space: 8 }) {
+                      Button("关闭")
+                        .type(ButtonType.Capsule)
+                        .backgroundColor("#FF3B30")
+                        .fontColor(Color.White)
+                        .fontSize(12)
+                        .height(28)
+                        .onClick(() => {
+                          router.pushUrl({
+                            url: 'pages/login/LoginPage',
+                            params: { action: 'close' }
+                          });
+                        })
+
+                      Button("修改")
+                        .type(ButtonType.Capsule)
+                        .backgroundColor("#F0F2F5")
+                        .fontColor("#333333")
+                        .fontSize(12)
+                        .height(28)
+                        .onClick(() => {
+                          router.pushUrl({
+                            url: 'pages/login/LoginPage',
+                            params: { action: 'modify' }
+                          });
+                        })
+                    }
+                  } else {
+                    Button("立即开启")
+                      .type(ButtonType.Capsule)
+                      .backgroundColor("#4A6CF7")
+                      .fontColor(Color.White)
+                      .fontSize(12)
+                      .height(28)
+                      .onClick(() => {
+                        router.pushUrl({
+                          url: 'pages/login/LoginPage',
+                          params: { action: 'set' }
+                        });
+                      })
+                  }
+                }
+                .width("100%")
+                .alignItems(VerticalAlign.Center)
+              }
+
+              // 预算设置卡片
+              FormCard({ title: "预算管理" }) {
+                Row() {
+                  Column() {
+                    Text("每月预算")
+                      .fontSize(16)
+                      .fontColor("#333333")
+                      .margin({ bottom: 4 })
+                    Text(this.monthlyBudget > 0 ? `¥ ${this.monthlyBudget.toFixed(0)}` : "未设置")
+                      .fontSize(12)
+                      .fontColor(this.monthlyBudget > 0 ? "#333333" : "#999999")
+                  }
+                  .alignItems(HorizontalAlign.Start)
+
+                  Blank()
+
+                  Button("设置")
+                    .type(ButtonType.Capsule)
+                    .backgroundColor("#F0F2F5")
+                    .fontColor("#333333")
+                    .fontSize(12)
+                    .height(28)
+                    .onClick(() => {
+                      this.budgetDialogController.open();
+                    })
+                }
+                .width("100%")
+                .alignItems(VerticalAlign.Center)
+              }
+
+              // 数据管理卡片
+              FormCard({ title: "数据管理" }) {
+                Row() {
+                  Column() {
+                    Text("清空数据")
+                      .fontSize(16)
+                      .fontColor("#333333")
+                      .margin({ bottom: 4 })
+                    Text("删除所有账单记录，不可恢复")
+                      .fontSize(12)
+                      .fontColor("#999999")
+                  }
+                  .alignItems(HorizontalAlign.Start)
+
+                  Blank()
+
+                  Button("清空")
+                    .type(ButtonType.Capsule)
+                    .backgroundColor("#FFF0F0")
+                    .fontColor("#FF3B30")
+                    .fontSize(12)
+                    .height(28)
+                    .onClick(() => {
+                      AlertDialog.show({
+                        title: '警告',
+                        message: '确定要清空所有账单数据吗？此操作无法撤销。',
+                        autoCancel: true,
+                        alignment: DialogAlignment.Center,
+                        primaryButton: {
+                          value: '取消',
+                          action: () => {}
+                        },
+                        secondaryButton: {
+                          value: '确定清空',
+                          fontColor: '#FF3B30',
+                          action: () => {
+                            BillRdb.clearAll().then(() => {
+                              this.refreshBillList();
+                              promptAction.showToast({ message: '数据已清空' });
+                            });
+                          }
+                        }
+                      })
+                    })
+                }
+                .width("100%")
+                .alignItems(VerticalAlign.Center)
+              }
+
+              // 关于卡片
+              FormCard({ title: "关于" }) {
+                Row() {
+                  Column() {
+                    Text("CoinNote")
+                      .fontSize(16)
+                      .fontColor("#333333")
+                      .margin({ bottom: 4 })
+                    Text("v1.0.0")
+                      .fontSize(12)
+                      .fontColor("#999999")
+                  }
+                  .alignItems(HorizontalAlign.Start)
+
+                  Blank()
+                }
+                .width("100%")
+                .alignItems(VerticalAlign.Center)
+              }
+            }
+            .width("100%")
+            .padding(16)
           }
           .width("100%")
           .height("100%")
           .backgroundColor("#F9FAFB")
-          .alignItems(HorizontalAlign.Center)
         }
-        .tabBar(this.TabBuilder("统计", 2, "📊"))
+        .tabBar(this.TabBuilder("我的", 3, "👤"))
       }
       .barWidth("100%")
       .barHeight(60)
@@ -1330,5 +2192,67 @@ struct CoinNote {
     .width("100%")
     .height("100%")
     .backgroundColor("#F9FAFB")
+  }
+}
+
+@CustomDialog
+struct AAConfirmDialog {
+  controller: CustomDialogController
+  confirm: (amount: number) => void = (amount: number) => {}
+  @State inputValue: string = ""
+
+  build() {
+    Column() {
+      Text("AA收款确认")
+        .fontSize(18)
+        .fontWeight(FontWeight.Bold)
+        .margin({ top: 24, bottom: 16 })
+
+      Text("请输入收到的金额（将从账单中扣除）：")
+        .fontSize(14)
+        .fontColor("#666666")
+        .margin({ bottom: 12 })
+        .width("90%")
+
+      TextInput({ placeholder: "0.00", text: this.inputValue })
+        .type(InputType.Number)
+        .onChange((value: string) => {
+          this.inputValue = value
+        })
+        .width("90%")
+        .height(48)
+        .backgroundColor("#F5F7FA")
+        .margin({ bottom: 24 })
+
+      Row() {
+        Button("取消")
+          .onClick(() => {
+            this.controller.close()
+          })
+          .backgroundColor("#F5F7FA")
+          .fontColor("#666666")
+          .layoutWeight(1)
+          .margin({ right: 12 })
+        
+        Button("确认")
+          .onClick(() => {
+            const val = parseFloat(this.inputValue);
+            if (!isNaN(val) && val >= 0) {
+              this.confirm(val);
+              this.controller.close();
+            } else {
+              promptAction.showToast({ message: '请输入有效金额' });
+            }
+          })
+          .backgroundColor("#4A6CF7")
+          .fontColor(Color.White)
+          .layoutWeight(1)
+      }
+      .width("90%")
+      .margin({ bottom: 24 })
+    }
+    .backgroundColor(Color.White)
+    .borderRadius(16)
+    .width("80%")
   }
 }

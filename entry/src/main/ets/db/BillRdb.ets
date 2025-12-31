@@ -22,6 +22,11 @@ class BillRdb {
     payType TEXT,
     tags TEXT,
     isReimbursable INTEGER,
+    isReimbursementReceived INTEGER,
+    isAA INTEGER,
+    isAaReceived INTEGER,
+    originalAmount REAL,
+    aaReceivedAmount REAL,
     note TEXT,
     direction TEXT
   )`;
@@ -35,7 +40,7 @@ class BillRdb {
     }
 
     const STORE_CONFIG: relationalStore.StoreConfig = {
-      name: 'CoinNote_v3.db',
+      name: 'CoinNote_v6.db', // 升级数据库版本以应用新表结构
       securityLevel: relationalStore.SecurityLevel.S1
     };
 
@@ -97,6 +102,11 @@ class BillRdb {
       payType: bill.payType,
       tags: JSON.stringify(bill.tags),
       isReimbursable: bill.isReimbursable ? 1 : 0,
+      isReimbursementReceived: bill.isReimbursementReceived ? 1 : 0,
+      isAA: bill.isAA ? 1 : 0,
+      isAaReceived: bill.isAaReceived ? 1 : 0,
+      originalAmount: bill.originalAmount || 0,
+      aaReceivedAmount: bill.aaReceivedAmount || 0,
       note: bill.note,
       direction: bill.direction
     };
@@ -124,6 +134,11 @@ class BillRdb {
       payType: bill.payType,
       tags: JSON.stringify(bill.tags),
       isReimbursable: bill.isReimbursable ? 1 : 0,
+      isReimbursementReceived: bill.isReimbursementReceived ? 1 : 0,
+      isAA: bill.isAA ? 1 : 0,
+      isAaReceived: bill.isAaReceived ? 1 : 0,
+      originalAmount: bill.originalAmount || 0,
+      aaReceivedAmount: bill.aaReceivedAmount || 0,
       note: bill.note,
       direction: bill.direction
     };
@@ -175,6 +190,11 @@ class BillRdb {
           payType: resultSet.getString(resultSet.getColumnIndex('payType')),
           tags: JSON.parse(resultSet.getString(resultSet.getColumnIndex('tags')) || '[]') as string[],
           isReimbursable: resultSet.getLong(resultSet.getColumnIndex('isReimbursable')) === 1,
+          isReimbursementReceived: resultSet.getLong(resultSet.getColumnIndex('isReimbursementReceived')) === 1,
+          isAA: resultSet.getLong(resultSet.getColumnIndex('isAA')) === 1,
+          isAaReceived: resultSet.getLong(resultSet.getColumnIndex('isAaReceived')) === 1,
+          originalAmount: resultSet.getDouble(resultSet.getColumnIndex('originalAmount')),
+          aaReceivedAmount: resultSet.getDouble(resultSet.getColumnIndex('aaReceivedAmount')),
           note: resultSet.getString(resultSet.getColumnIndex('note')),
           direction: resultSet.getString(resultSet.getColumnIndex('direction')) as 'expense' | 'income'
         };
@@ -183,6 +203,21 @@ class BillRdb {
       }
       resultSet.close();
       return result;
+    });
+  }
+
+  // 清空所有数据
+  clearAll(): Promise<void> {
+    if (this.isMock) {
+      this.mockData = [];
+      return Promise.resolve();
+    }
+
+    if (!this.rdbStore) return Promise.reject(new Error('Store not initialized'));
+
+    let predicates = new relationalStore.RdbPredicates(this.tableName);
+    return this.rdbStore.delete(predicates).then(() => {
+      return;
     });
   }
 }

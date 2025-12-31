@@ -1,6 +1,7 @@
 import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
+import preferences from '@ohos.data.preferences';
 
 const DOMAIN = 0x0000;
 
@@ -18,11 +19,22 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onDestroy');
   }
 
-  onWindowStageCreate(windowStage: window.WindowStage): void {
+  async onWindowStageCreate(windowStage: window.WindowStage): Promise<void> {
     // Main window is created, set main page for this ability
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
 
-    windowStage.loadContent('pages/Index', (err) => {
+    let startPage = 'pages/Index';
+    try {
+      const pref = await preferences.getPreferences(this.context, 'coin_note_pref');
+      const password = await pref.get('app_password', '') as string;
+      if (password) {
+        startPage = 'pages/login/LoginPage';
+      }
+    } catch (e) {
+      hilog.error(DOMAIN, 'testTag', 'Failed to check preferences. Cause: %{public}s', JSON.stringify(e));
+    }
+
+    windowStage.loadContent(startPage, (err) => {
       if (err.code) {
         hilog.error(DOMAIN, 'testTag', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err));
         return;
