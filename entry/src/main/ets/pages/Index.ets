@@ -1,5 +1,5 @@
-﻿// 版权所有 (C) 2026 CoinNote. 保留所有权利。
-/*
+﻿/*
+ * Copyright (c) 2026 Huawei Device Co., Ltd.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -669,9 +669,18 @@ struct CoinNote {
     this.aaConfirmController.open();
   }
 
-  // 侧滑删除按钮
-  @Builder itemEnd(id: number) {
+  // 侧滑菜单
+  @Builder itemEnd(bill: BillItem) {
     Row() {
+      Button("编辑")
+        .type(ButtonType.Normal)
+        .width(80)
+        .height("100%")
+        .backgroundColor("#4A6CF7")
+        .fontColor(Color.White)
+        .onClick(() => {
+          this.startEdit(bill);
+        })
       Button("删除")
         .type(ButtonType.Normal)
         .width(80)
@@ -679,7 +688,7 @@ struct CoinNote {
         .backgroundColor(Color.Red)
         .fontColor(Color.White)
         .onClick(() => {
-          this.deleteBill(id);
+          this.deleteBill(bill.id);
         })
     }
     .padding({ left: 12 })
@@ -1527,35 +1536,12 @@ struct CoinNote {
                           .backgroundColor(Color.White)
                           .borderRadius(12)
                           .shadow({ radius: 4, color: "#0D000000", offsetY: 2 }) // 优化阴影
-                          .onClick(() => {
-                            ActionSheet.show({
-                              title: '账单操作',
-                              message: `类型：${bill.type}  金额：${bill.amount.toFixed(2)}`,
-                              autoCancel: true,
-                              alignment: DialogAlignment.Bottom,
-                              offset: { dx: 0, dy: -10 },
-                              sheets: [
-                                {
-                                  title: '编辑',
-                                  action: () => {
-                                    this.startEdit(bill);
-                                  }
-                                },
-                                {
-                                  title: '删除',
-                                  action: () => {
-                                    this.deleteBill(bill.id);
-                                  }
-                                }
-                              ]
-                            })
-                          })
                         }
-                        .swipeAction({ end: this.itemEnd(bill.id) })
+                        .swipeAction({ end: this.itemEnd(bill) })
                         .margin({ bottom: 12 })
                       }, (bill: BillItem) => bill.id.toString())
                     }
-                  }, (group: DayGroup) => group.date)
+                  }, (group: DayGroup) => `${group.date}_${group.bills.length}_${group.dayIncome + group.dayExpense}`)
                 }
                 .width("100%")
                 .layoutWeight(1) // 占据剩余空间
@@ -1685,31 +1671,8 @@ struct CoinNote {
                         .backgroundColor(Color.White)
                         .borderRadius(12)
                         .shadow({ radius: 4, color: "#0D000000", offsetY: 2 }) // 优化阴影
-                        .onClick(() => {
-                          ActionSheet.show({
-                            title: '账单操作',
-                            message: `类型：${bill.type}  金额：${bill.amount.toFixed(2)}`,
-                            autoCancel: true,
-                            alignment: DialogAlignment.Bottom,
-                            offset: { dx: 0, dy: -10 },
-                            sheets: [
-                              {
-                                title: '编辑',
-                                action: () => {
-                                  this.startEdit(bill);
-                                }
-                              },
-                              {
-                                title: '删除',
-                                action: () => {
-                                  this.deleteBill(bill.id);
-                                }
-                              }
-                            ]
-                          })
-                        })
                       }
-                      .swipeAction({ end: this.itemEnd(bill.id) })
+                      .swipeAction({ end: this.itemEnd(bill) })
                       .margin({ bottom: 12 })
                     })
                   }
@@ -2149,6 +2112,7 @@ struct CoinNote {
                           action: () => {
                             BillRdb.clearAll().then(() => {
                               this.refreshBillList();
+                              this.resetForm();
                               promptAction.showToast({ message: '数据已清空' });
                             });
                           }
